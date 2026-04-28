@@ -711,12 +711,47 @@ patch(Composer.prototype, {
                             console.warn("Could not set selection:", e);
                         }
                     }
+
+                    // Fallback native event listener in case Odoo 19's HistoryPlugin swallows onChange
+                    editable.addEventListener("input", this.boundOnInput);
+                    editable.addEventListener("focus", () => {
+                        this.props.composer.isFocused = true;
+                    });
+                    editable.addEventListener("blur", () => {
+                        this.props.composer.isFocused = false;
+                    });
                 } else if (attempts < 20) {
                     setTimeout(forceFocus, 50);
                 }
             };
             forceFocus();
         }
+    },
+
+    get isSendButtonDisabled() {
+        if (this.wysiwygEditor && !this.env.inChatWindow) {
+            let text = this.props.composer.text || "";
+            // Always double check the editor content just in case state got out of sync
+            if (!text && this.wysiwygEditor.editable) {
+                try {
+                    let htmlStr = typeof this.wysiwygEditor.getContent === "function" 
+                        ? this.wysiwygEditor.getContent() 
+                        : this.wysiwygEditor.editable.innerHTML;
+                    const cleanHtml = htmlStr.trim();
+                    if (cleanHtml !== "<p><br></p>" && cleanHtml !== "<p></p>" && cleanHtml !== "") {
+                        text = htmlStr;
+                        this.props.composer.text = htmlStr;
+                    }
+                } catch(e) {}
+            }
+            const attachments = this.props.composer.attachments;
+            return (
+                !this.state.active ||
+                (!text && attachments.length === 0) ||
+                attachments.some(({ uploading }) => Boolean(uploading))
+            );
+        }
+        return super.isSendButtonDisabled;
     },
 
     onWysiwygBlur() {
