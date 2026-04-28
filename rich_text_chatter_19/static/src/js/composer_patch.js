@@ -629,8 +629,12 @@ patch(Composer.prototype, {
             return;
         }
         
-        if (this.props.composer.text !== htmlStr) {
-            this.props.composer.text = htmlStr;
+        // Treat empty paragraphs as empty text so the Log button is correctly disabled
+        const cleanHtml = htmlStr.trim();
+        const newText = (cleanHtml === "<p><br></p>" || cleanHtml === "<p></p>" || cleanHtml === "") ? "" : htmlStr;
+
+        if (this.props.composer.text !== newText) {
+            this.props.composer.text = newText;
 
             // --- SYNC MENTIONS FROM HTML TO ODOO'S INTERNAL RECORD ---
             try {
@@ -658,6 +662,10 @@ patch(Composer.prototype, {
             } catch (e) {
                 console.error("Error syncing mentions from Html:", e);
             }
+            
+            // Force Owl to re-render. Odoo 19 uses toRaw(composer) in canPostMessage,
+            // so mutating composer.text outside an Owl event handler won't trigger UI updates automatically.
+            this.render();
         }
     },
 
