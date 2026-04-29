@@ -611,6 +611,61 @@ patch(Composer.prototype, {
         }
     },
 
+    async processMessage(cb) {
+        if (this.wysiwygEditor && !this.env.inChatWindow) {
+            if (this.props.composer.attachments.some(({ uploading }) => uploading)) {
+                this.env.services.notification.add(_t("Please wait while the file is uploading."), {
+                    type: "warning",
+                });
+                return;
+            }
+            
+            // Force evaluate the actual editor content immediately before processing
+            let htmlStr = "";
+            try {
+                htmlStr = typeof this.wysiwygEditor.getContent === "function" 
+                    ? this.wysiwygEditor.getContent() 
+                    : this.wysiwygEditor.editable.innerHTML;
+            } catch (e) {}
+            
+            const cleanHtml = htmlStr.trim();
+            const textExists = cleanHtml !== "<p><br></p>" && cleanHtml !== "<p></p>" && cleanHtml !== "";
+            
+            if (textExists || this.props.composer.attachments.length > 0 || (this.message && this.message.attachment_ids.length > 0)) {
+                if (!this.state.active) {
+                    return;
+                }
+                this.state.active = false;
+                
+                // FORCE the proxy state
+                if (textExists) {
+                    this.props.composer.text = htmlStr;
+                }
+                
+                try {
+                    await cb(this.props.composer.text);
+                } catch(e) {
+                    console.error("Error during message send callback:", e);
+                }
+                
+                if (this.props.onPostCallback) {
+                    this.props.onPostCallback();
+                }
+                this.clear();
+                this.state.active = true;
+                
+                // Safely restore focus to the Wysiwyg
+                try {
+                    if (this.wysiwygEditor.editable) {
+                        this.wysiwygEditor.editable.focus();
+                    }
+                } catch(e) {}
+            }
+            return;
+        }
+        return super.processMessage(...arguments);
+    },
+
     onWysiwygInput() {
         if (!this.wysiwygEditor) {
             return;
