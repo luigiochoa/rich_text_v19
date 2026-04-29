@@ -91,7 +91,7 @@ if (editAction) {
     const originalEditOnClick = editAction.onClick;
     editAction.onClick = (component) => {
         if (!component.env.inChatWindow) {
-            const message = toRaw(component.props.message);
+            const message = toRaw(component.message);
             // In Odoo 19, body is the HTML content.
             const text = message.body || "";
             // We set the composer Record.
@@ -126,8 +126,8 @@ messageActionsRegistry.add("quote-reply", {
     icon: "fa fa-reply",
     title: _t("Quote & Reply"),
     onClick: (component) => {
-        const message = toRaw(component.props.message);
-        const thread = toRaw(component.props.thread) || toRaw(message.thread);
+        const message = toRaw(component?.message);
+        const thread = toRaw(component?.props?.thread) || toRaw(message?.thread);
         if (!thread) return;
 
         const authorName = message.author ? message.author.name : _t("Someone");
@@ -204,18 +204,19 @@ patch(Store.prototype, {
 // Robust Pin/Unpin implementation
 messageActionsRegistry.add("rt-pin-toggle", {
     condition: (component) => {
-        const message = component.props.message;
-        const thread = component.props.thread || message?.thread;
+        const message = component?.message;
+        const thread = component?.props?.thread || message?.thread;
         return !!message && !message.is_transient && thread?.model !== "discuss.channel";
     },
-    icon: (component) => component.props.message.pinned_at ? "fa-thumb-tack text-primary" : "fa-thumb-tack",
-    title: (component) => component.props.message.pinned_at ? _t("Unpin Message") : _t("Pin to Top"),
+    icon: (component) => component?.message?.pinned_at ? "fa-thumb-tack text-primary" : "fa-thumb-tack",
+    title: (component) => component?.message?.pinned_at ? _t("Unpin Message") : _t("Pin to Top"),
     setup: () => {
         const component = useComponent();
         component.rtcOrm = useService("orm");
     },
     onClick: async (component) => {
-        const message = component.props.message;
+        const message = component?.message;
+        if (!message) return;
         try {
             const result = await component.rtcOrm.call("mail.message", "rt_toggle_pinned", [[message.id]]);
             if (result) {
