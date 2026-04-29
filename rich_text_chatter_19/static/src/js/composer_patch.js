@@ -10,7 +10,7 @@ import { Thread as ThreadModel } from "@mail/core/common/thread_model";
 import { Message as MessageComponent } from "@mail/core/common/message";
 import { Thread as ThreadComponent } from "@mail/core/common/thread";
 import { rpc } from "@web/core/network/rpc";
-import { toRaw, onWillUnmount } from "@odoo/owl";
+import { toRaw, onWillUnmount, markup } from "@odoo/owl";
 import { MAIN_PLUGINS } from "@html_editor/plugin_sets";
 import { Plugin } from "@html_editor/plugin";
 import { MentionPlugin } from "@mail/views/web/fields/html_composer_message_field/mention_plugin";
@@ -123,55 +123,58 @@ messageActionsRegistry.add("quote-reply", {
     onClick: (component) => {
         const message = toRaw(component.props.message);
         const thread = toRaw(component.props.thread);
-        if (thread && thread.composer) {
-            const authorName = message.author ? message.author.name : _t("Someone");
-            
-            let cleanBody = message.body || "";
+        if (!thread) return;
 
-            // We use a div to bypass Read More, but we add a nice background and border to mimic a native quote
-            // Setting contenteditable="false" makes the whole block behave like a single attachment, allowing 1-click deletion via Backspace
-            const quoteHtml = `
-                <div class="rich_text_quote" contenteditable="false" style="border-left: 4px solid #00A09D; background-color: rgba(0, 160, 157, 0.05); padding: 12px 15px; margin: 10px 0; border-radius: 0 8px 8px 0; color: #495057;">
-                    <div class="text-truncate" style="font-size: 0.9em; margin-bottom: 8px; color: #00A09D; font-weight: 600;">
-                        <i class="fa fa-reply me-1"></i> ${authorName} ${_t("wrote:")}
-                    </div>
-                    <div style="opacity: 0.9;">${cleanBody}</div>
+        const authorName = message.author ? message.author.name : _t("Someone");
+        const cleanBody = message.body || "";
+
+        const quoteHtml = `
+            <div class="rich_text_quote" contenteditable="false" style="border-left: 4px solid #00A09D; background-color: rgba(0, 160, 157, 0.05); padding: 12px 15px; margin: 10px 0; border-radius: 0 8px 8px 0; color: #495057;">
+                <div class="text-truncate" style="font-size: 0.9em; margin-bottom: 8px; color: #00A09D; font-weight: 600;">
+                    <i class="fa fa-reply me-1"></i> ${authorName} ${_t("wrote:")}
                 </div>
-                <p><br></p>
-            `;
-            
-            // Append the quote to the composer's current text model
-            const currentText = thread.composer.text || "";
-            thread.composer.text = currentText + quoteHtml;
-            
-            // Force Odoo to open the "Send Message" tab instead of hiding it in Log Note
-            const chatterEl = component.env.inChatWindow ? null : document.querySelector('.o-mail-Chatter');
-            const sendMessageBtn = chatterEl ? chatterEl.querySelector('.o-mail-Chatter-sendMessage') : document.querySelector('.o-mail-Chatter-sendMessage');
-            
-            if (sendMessageBtn && !sendMessageBtn.classList.contains('active')) {
-                sendMessageBtn.click();
-            }
+                <div style="opacity: 0.9;">${cleanBody}</div>
+            </div>
+            <p><br></p>
+        `;
 
-            // Dispatch an event to update the Wysiwyg component if it's already mounted
-            window.dispatchEvent(new CustomEvent("rich_text_insert_quote", {
-                detail: { 
-                    threadId: thread.localId || thread.id, 
-                    quoteHtml: quoteHtml 
-                }
-            }));
+        // Force open the "Send Message" composer tab first
+        const chatterEl = component.env.inChatWindow ? null : document.querySelector('.o-mail-Chatter');
+        const sendMessageBtn = chatterEl
+            ? chatterEl.querySelector('.o-mail-Chatter-sendMessage')
+            : document.querySelector('.o-mail-Chatter-sendMessage');
 
-            // Focus on the composer and scroll it into view properly
-            thread.composer.isFocused = true;
-            setTimeout(() => {
-                const composerEl = chatterEl ? chatterEl.querySelector('.o-mail-Composer') : document.querySelector('.o-mail-Composer');
-                if (composerEl) {
-                    // 'center' usually works better for the topbar composer so it doesn't get hidden under fixed headers
-                    composerEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }
-            }, 100);
+        if (sendMessageBtn && !sendMessageBtn.classList.contains('active')) {
+            sendMessageBtn.click();
         }
+
+        // Initialize composer if it doesn't exist yet (e.g. first time opening)
+        if (!thread.composer) {
+            thread.composer = { text: "", isFocused: false, mentionedPartners: [], mentionedChannels: [], attachments: [] };
+        }
+
+        // Append the quote to the composer's current text
+        const currentText = thread.composer.text || "";
+        thread.composer.text = currentText + quoteHtml;
+
+        // Dispatch event so the Wysiwyg (if already mounted) injects the quote into the DOM
+        const threadId = thread.localId || thread.id;
+        window.dispatchEvent(new CustomEvent("rich_text_insert_quote", {
+            detail: { threadId, quoteHtml }
+        }));
+
+        // Focus composer and scroll to it
+        thread.composer.isFocused = true;
+        setTimeout(() => {
+            const composerEl = chatterEl
+                ? chatterEl.querySelector('.o-mail-Composer')
+                : document.querySelector('.o-mail-Composer');
+            if (composerEl) {
+                composerEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }, 150);
     },
-    sequence: 55, // Places it nicely in the dropdown next to other actions
+    sequence: 55,
 });
 
 patch(Store.prototype, {
@@ -206,19 +209,30 @@ patch(Store.prototype, {
 
 
 messageActionsRegistry.add("pin-toggle", {
-    condition: (component) => component?.props?.message && !component.props.message.is_transient && component?.store?.self?.isInternalUser,
+    condition: (component) =>
+        component?.props?.message &&
+        !component.props.message.is_transient &&
+        component.store?.self?.isInternalUser &&
+        // Only show in chatter (non-channel threads), native Odoo already handles discuss.channel
+        component.props.thread?.model !== "discuss.channel",
     icon: (component) => component?.props?.message?.pinned_at ? "fa-thumb-tack text-primary" : "fa-thumb-tack",
     title: (component) => component?.props?.message?.pinned_at ? _t("Unpin Message") : _t("Pin to Top"),
     onClick: async (component) => {
         const message = component.props.message;
-        const result = await component.env.services.orm.call(
-            "mail.message",
-            "rt_toggle_pinned",
-            [[message.id]]
-        );
-        // Update the record reactively so the UI refreshes immediately
-        if (result) {
-            message.pinned_at = result.pinned_at || false;
+        try {
+            const result = await component.store.env.services.orm.call(
+                "mail.message",
+                "rt_toggle_pinned",
+                [[message.id]]
+            );
+            // Use store.insert() to update the reactive Record so the UI refreshes properly
+            if (result) {
+                component.store.insert({
+                    "Message": [{ id: message.id, pinned_at: result.pinned_at || false }]
+                });
+            }
+        } catch (e) {
+            console.error("[RTC] pin-toggle error:", e);
         }
     },
     sequence: 45,
@@ -566,12 +580,13 @@ patch(Composer.prototype, {
     },
 
     getWysiwygConfig() {
-        // Strip the wrapping div when loading back into the editor if present
-        let content = this.props.composer.text || "";
-        content = content.replace(/^<div[^>]*>/, "").replace(/<\/div>$/, "");
+        // Strip the wrapping div that we add on post, then pass as markup()
+        // so Odoo 19's Wysiwyg renders it as HTML (not escaped text).
+        let rawContent = this.props.composer.text || "";
+        rawContent = rawContent.replace(/^<div[^>]*>/, "").replace(/<\/div>$/, "");
         
         return {
-            content: content,
+            content: markup(rawContent),
             allowCommandVideo: false,
             placeholder: this.placeholder,
             disableFloatingToolbar: false,
@@ -833,9 +848,16 @@ patch(Composer.prototype, {
     
     clear() {
         super.clear(...arguments);
-        if (this.wysiwygEditor && this.wysiwygEditor.editable && !this.env.inChatWindow) {
-            this.wysiwygEditor.editable.innerHTML = "";
+        // Always reset text regardless of Wysiwyg state.
+        // Previously this was conditional on wysiwygEditor.editable being alive,
+        // but the editor is often already destroyed by the time clear() runs
+        // (e.g. onPostCallback closes the composer first), leaving stale HTML
+        // in composer.text that pre-fills the editor on the next open.
+        if (!this.env.inChatWindow) {
             this.props.composer.text = "";
+            if (this.wysiwygEditor && this.wysiwygEditor.editable) {
+                this.wysiwygEditor.editable.innerHTML = "";
+            }
         }
     }
 });
