@@ -92,11 +92,12 @@ if (editAction) {
     editAction.onClick = (component) => {
         if (!component.env.inChatWindow) {
             const message = toRaw(component.props.message);
+            // Use message body directly for HTML editor, but wrap it to ensure it's treated as HTML
             const text = message.body || "";
+            // We set the composer Record. By Odoo 19 rules, this will create a new Composer record.
             message.composer = {
-                message: message,
                 mentionedPartners: message.recipients,
-                text,
+                text: text,
                 selection: {
                     start: text.length,
                     end: text.length,
@@ -104,6 +105,11 @@ if (editAction) {
                 },
             };
             component.state.isEditing = true;
+            
+            // Force re-render to ensure Composer component picks up the new state
+            if (typeof component.render === 'function') {
+                component.render();
+            }
         } else {
             originalEditOnClick(component);
         }
@@ -120,7 +126,7 @@ if (downloadAction) {
 messageActionsRegistry.add("quote-reply", {
     condition: () => true,
     icon: "fa fa-quote-right",
-    title: _t("Quote & Reply"),
+    title: () => _t("Quote & Reply"),
     onClick: (component) => {
         const message = toRaw(component.props.message);
         const thread = toRaw(component.props.thread);
@@ -134,21 +140,30 @@ messageActionsRegistry.add("quote-reply", {
             `<div style="opacity:.9">${cleanBody}</div></div><p><br></p>`,
         ].join("");
 
-        // Open "Send Message" tab if not already open
+        // Find and click the "Send Message" or "Log Note" button to ensure composer is visible
         const chatterEl = document.querySelector('.o-mail-Chatter');
-        const sendMessageBtn = chatterEl && chatterEl.querySelector('.o-mail-Chatter-sendMessage');
-        if (sendMessageBtn && !sendMessageBtn.classList.contains('active')) {
-            sendMessageBtn.click();
+        if (chatterEl) {
+            const composerEl = chatterEl.querySelector('.o-mail-Composer');
+            if (!composerEl) {
+                // If composer not visible, try to click the first active button (Send Message or Log Note)
+                const activeBtn = chatterEl.querySelector('.o-mail-Chatter-command:not(.active)');
+                if (activeBtn) {
+                    activeBtn.click();
+                } else {
+                    // Fallback to specific buttons
+                    const sendMessageBtn = chatterEl.querySelector('.o-mail-Chatter-sendMessage');
+                    if (sendMessageBtn) sendMessageBtn.click();
+                }
+            }
         }
 
-        // If composer Record already exists, append text directly (safe — it IS a Record)
+        // Append to existing text if possible, or wait for mount
         if (thread.composer) {
             thread.composer.text = (thread.composer.text || "") + quoteHtml;
             thread.composer.isFocused = true;
         }
 
         // Dispatch event for the mounted Wysiwyg to inject into DOM
-        // Delay so the composer has time to mount when it was closed
         const threadId = thread.localId || thread.id;
         setTimeout(() => {
             window.dispatchEvent(new CustomEvent("rich_text_insert_quote", {
@@ -159,9 +174,9 @@ messageActionsRegistry.add("quote-reply", {
         setTimeout(() => {
             const composerEl = document.querySelector('.o-mail-Composer');
             if (composerEl) composerEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, 400);
+        }, 450);
     },
-    sequence: 75,
+    sequence: 30, // Move it up in the menu so it's more visible
 });
 
 patch(Store.prototype, {
@@ -195,37 +210,72 @@ patch(Store.prototype, {
 });
 
 
-messageActionsRegistry.add("pin-toggle", {
-    // Only show on real chatter messages (not discuss channels — Odoo handles those natively)
-    condition: (component) =>
-        !!component?.props?.message &&
-        !component.props.message.is_transient &&
-        component.props.thread?.model !== "discuss.channel",
-    icon: (component) => component?.props?.message?.pinned_at ? "fa-thumb-tack text-primary" : "fa-thumb-tack",
-    title: (component) => component?.props?.message?.pinned_at ? _t("Unpin Message") : _t("Pin to Top"),
-    // Inject ORM service the same way the native 'delete' action does
-    setup: () => {
+// Robust Pin/Unpin implementation by patching the native action if it exists, 
+// or adding a new one that works in the chatter.
+const pinAction = messageActionsRegistry.get("pin");
+if (pinAction) {
+    const originalPinCondition = pinAction.condition;
+    pinAction.condition = (component) => {
+        // Show if native condition passes OR if it's a chatter message
+        return originalPinCondition(component) || (
+            !!component?.props?.message && 
+            !component.props.message.is_transient && 
+            component.props.thread?.model !== "discuss.channel"
+        );
+    };
+    
+    const originalPinOnClick = pinAction.onClick;
+    pinAction.onClick = async (component) => {
+        if (component.props.thread?.model !== "discuss.channel") {
+            const message = component.props.message;
+            try {
+                const orm = component.rtcOrm || component.env.services.orm;
+                const result = await orm.call("mail.message", "rt_toggle_pinned", [[message.id]]);
+                if (result) {
+                    message.pinned_at = result.pinned_at || false;
+                }
+            } catch (e) {
+                console.error("[RTC] pin error:", e);
+            }
+        } else {
+            return originalPinOnClick(component);
+        }
+    };
+    
+    // Ensure ORM service is available via setup
+    const originalPinSetup = pinAction.setup;
+    pinAction.setup = (action) => {
+        if (originalPinSetup) originalPinSetup(action);
         const component = useComponent();
         component.rtcOrm = useService("orm");
-    },
-    onClick: async (component) => {
-        const message = component.props.message;
-        try {
-            const result = await component.rtcOrm.call(
-                "mail.message",
-                "rt_toggle_pinned",
-                [[message.id]]
-            );
-            if (result) {
-                // Direct mutation works on Odoo 19 reactive Records
-                message.pinned_at = result.pinned_at || false;
+    };
+} else {
+    // Fallback: Add as a new action if the pin module is not installed
+    messageActionsRegistry.add("pin-toggle", {
+        condition: (component) =>
+            !!component?.props?.message &&
+            !component.props.message.is_transient &&
+            component.props.thread?.model !== "discuss.channel",
+        icon: (component) => component?.props?.message?.pinned_at ? "fa-thumb-tack text-primary" : "fa-thumb-tack",
+        title: (component) => component?.props?.message?.pinned_at ? _t("Unpin Message") : _t("Pin to Top"),
+        setup: () => {
+            const component = useComponent();
+            component.rtcOrm = useService("orm");
+        },
+        onClick: async (component) => {
+            const message = component.props.message;
+            try {
+                const result = await component.rtcOrm.call("mail.message", "rt_toggle_pinned", [[message.id]]);
+                if (result) {
+                    message.pinned_at = result.pinned_at || false;
+                }
+            } catch (e) {
+                console.error("[RTC] pin-toggle error:", e);
             }
-        } catch (e) {
-            console.error("[RTC] pin-toggle error:", e);
-        }
-    },
-    sequence: 85,
-});
+        },
+        sequence: 85,
+    });
+}
 
 patch(MessageModel.prototype, {
     async edit(body, attachments = [], args = {}) {
