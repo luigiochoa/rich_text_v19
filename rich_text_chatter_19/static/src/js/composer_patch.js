@@ -585,6 +585,17 @@ patch(Composer.prototype, {
             mode: this.props.mode,
             thread: this.props.composer.thread,
             isLog: this.props.type === 'note', // Pass composer mode downstream
+            // Required by enterprise plugins (e.g. ChatGPTPlugin) that call
+            // this.config.getRecordInfo() (no optional chaining) in their destroy().
+            // Without this, switching tabs or closing the composer throws:
+            //   TypeError: this.config.getRecordInfo is not a function
+            getRecordInfo: () => {
+                const thread = this.props.composer?.thread;
+                return {
+                    resModel: thread?.model || false,
+                    resId: thread?.id || false,
+                };
+            },
         };
     },
 
