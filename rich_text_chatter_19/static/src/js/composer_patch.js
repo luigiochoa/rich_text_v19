@@ -92,9 +92,9 @@ if (editAction) {
     editAction.onClick = (component) => {
         if (!component.env.inChatWindow) {
             const message = toRaw(component.props.message);
-            // Use message body directly for HTML editor, but wrap it to ensure it's treated as HTML
+            // In Odoo 19, body is the HTML content.
             const text = message.body || "";
-            // We set the composer Record. By Odoo 19 rules, this will create a new Composer record.
+            // We set the composer Record.
             message.composer = {
                 mentionedPartners: message.recipients,
                 text: text,
@@ -105,8 +105,6 @@ if (editAction) {
                 },
             };
             component.state.isEditing = true;
-            
-            // Force re-render to ensure Composer component picks up the new state
             if (typeof component.render === 'function') {
                 component.render();
             }
@@ -125,11 +123,11 @@ if (downloadAction) {
 
 messageActionsRegistry.add("quote-reply", {
     condition: () => true,
-    icon: "fa fa-quote-right",
-    title: () => _t("Quote & Reply"),
+    icon: "fa fa-reply",
+    title: _t("Quote & Reply"),
     onClick: (component) => {
         const message = toRaw(component.props.message);
-        const thread = toRaw(component.props.thread);
+        const thread = toRaw(component.props.thread) || toRaw(message.thread);
         if (!thread) return;
 
         const authorName = message.author ? message.author.name : _t("Someone");
@@ -140,30 +138,23 @@ messageActionsRegistry.add("quote-reply", {
             `<div style="opacity:.9">${cleanBody}</div></div><p><br></p>`,
         ].join("");
 
-        // Find and click the "Send Message" or "Log Note" button to ensure composer is visible
+        // Find the chatter element to toggle the composer if needed
         const chatterEl = document.querySelector('.o-mail-Chatter');
         if (chatterEl) {
             const composerEl = chatterEl.querySelector('.o-mail-Composer');
             if (!composerEl) {
-                // If composer not visible, try to click the first active button (Send Message or Log Note)
-                const activeBtn = chatterEl.querySelector('.o-mail-Chatter-command:not(.active)');
-                if (activeBtn) {
-                    activeBtn.click();
-                } else {
-                    // Fallback to specific buttons
-                    const sendMessageBtn = chatterEl.querySelector('.o-mail-Chatter-sendMessage');
-                    if (sendMessageBtn) sendMessageBtn.click();
-                }
+                // Try to click "Send Message" or "Log Note" based on the message type
+                const selector = message.is_note ? '.o-mail-Chatter-logNote' : '.o-mail-Chatter-sendMessage';
+                const btn = chatterEl.querySelector(selector) || chatterEl.querySelector('.o-mail-Chatter-command');
+                if (btn) btn.click();
             }
         }
 
-        // Append to existing text if possible, or wait for mount
         if (thread.composer) {
             thread.composer.text = (thread.composer.text || "") + quoteHtml;
             thread.composer.isFocused = true;
         }
 
-        // Dispatch event for the mounted Wysiwyg to inject into DOM
         const threadId = thread.localId || thread.id;
         setTimeout(() => {
             window.dispatchEvent(new CustomEvent("rich_text_insert_quote", {
@@ -176,7 +167,7 @@ messageActionsRegistry.add("quote-reply", {
             if (composerEl) composerEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 450);
     },
-    sequence: 30, // Move it up in the menu so it's more visible
+    sequence: 10,
 });
 
 patch(Store.prototype, {
@@ -210,72 +201,32 @@ patch(Store.prototype, {
 });
 
 
-// Robust Pin/Unpin implementation by patching the native action if it exists, 
-// or adding a new one that works in the chatter.
-const pinAction = messageActionsRegistry.get("pin");
-if (pinAction) {
-    const originalPinCondition = pinAction.condition;
-    pinAction.condition = (component) => {
-        // Show if native condition passes OR if it's a chatter message
-        return originalPinCondition(component) || (
-            !!component?.props?.message && 
-            !component.props.message.is_transient && 
-            component.props.thread?.model !== "discuss.channel"
-        );
-    };
-    
-    const originalPinOnClick = pinAction.onClick;
-    pinAction.onClick = async (component) => {
-        if (component.props.thread?.model !== "discuss.channel") {
-            const message = component.props.message;
-            try {
-                const orm = component.rtcOrm || component.env.services.orm;
-                const result = await orm.call("mail.message", "rt_toggle_pinned", [[message.id]]);
-                if (result) {
-                    message.pinned_at = result.pinned_at || false;
-                }
-            } catch (e) {
-                console.error("[RTC] pin error:", e);
-            }
-        } else {
-            return originalPinOnClick(component);
-        }
-    };
-    
-    // Ensure ORM service is available via setup
-    const originalPinSetup = pinAction.setup;
-    pinAction.setup = (action) => {
-        if (originalPinSetup) originalPinSetup(action);
+// Robust Pin/Unpin implementation
+messageActionsRegistry.add("rt-pin-toggle", {
+    condition: (component) => {
+        const message = component.props.message;
+        const thread = component.props.thread || message?.thread;
+        return !!message && !message.is_transient && thread?.model !== "discuss.channel";
+    },
+    icon: (component) => component.props.message.pinned_at ? "fa-thumb-tack text-primary" : "fa-thumb-tack",
+    title: (component) => component.props.message.pinned_at ? _t("Unpin Message") : _t("Pin to Top"),
+    setup: () => {
         const component = useComponent();
         component.rtcOrm = useService("orm");
-    };
-} else {
-    // Fallback: Add as a new action if the pin module is not installed
-    messageActionsRegistry.add("pin-toggle", {
-        condition: (component) =>
-            !!component?.props?.message &&
-            !component.props.message.is_transient &&
-            component.props.thread?.model !== "discuss.channel",
-        icon: (component) => component?.props?.message?.pinned_at ? "fa-thumb-tack text-primary" : "fa-thumb-tack",
-        title: (component) => component?.props?.message?.pinned_at ? _t("Unpin Message") : _t("Pin to Top"),
-        setup: () => {
-            const component = useComponent();
-            component.rtcOrm = useService("orm");
-        },
-        onClick: async (component) => {
-            const message = component.props.message;
-            try {
-                const result = await component.rtcOrm.call("mail.message", "rt_toggle_pinned", [[message.id]]);
-                if (result) {
-                    message.pinned_at = result.pinned_at || false;
-                }
-            } catch (e) {
-                console.error("[RTC] pin-toggle error:", e);
+    },
+    onClick: async (component) => {
+        const message = component.props.message;
+        try {
+            const result = await component.rtcOrm.call("mail.message", "rt_toggle_pinned", [[message.id]]);
+            if (result) {
+                message.pinned_at = result.pinned_at || false;
             }
-        },
-        sequence: 85,
-    });
-}
+        } catch (e) {
+            console.error("[RTC] pin error:", e);
+        }
+    },
+    sequence: 15,
+});
 
 patch(MessageModel.prototype, {
     async edit(body, attachments = [], args = {}) {
@@ -619,13 +570,14 @@ patch(Composer.prototype, {
     },
 
     getWysiwygConfig() {
-        // Strip the wrapping div that we add on post, then pass as markup()
-        // so Odoo 19's Wysiwyg renders it as HTML (not escaped text).
+        // Strip the wrapping div that we add on post.
+        // Important: we pass the raw string, NOT markup(), because the Editor
+        // handles its own sanitization and attachTo expects a string or DOM.
         let rawContent = this.props.composer.text || "";
         rawContent = rawContent.replace(/^<div[^>]*>/, "").replace(/<\/div>$/, "");
         
         return {
-            content: markup(rawContent),
+            content: rawContent,
             allowCommandVideo: false,
             placeholder: this.placeholder,
             disableFloatingToolbar: false,
@@ -638,11 +590,7 @@ patch(Composer.prototype, {
             onInput: () => this.onWysiwygInput(),
             mode: this.props.mode,
             thread: this.props.composer.thread,
-            isLog: this.props.type === 'note', // Pass composer mode downstream
-            // Required by enterprise plugins (e.g. ChatGPTPlugin) that call
-            // this.config.getRecordInfo() (no optional chaining) in their destroy().
-            // Without this, switching tabs or closing the composer throws:
-            //   TypeError: this.config.getRecordInfo is not a function
+            isLog: this.props.type === 'note', 
             getRecordInfo: () => {
                 const thread = this.props.composer?.thread;
                 return {
