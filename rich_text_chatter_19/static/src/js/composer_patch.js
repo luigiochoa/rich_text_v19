@@ -1,5 +1,4 @@
 /** @odoo-module */
-import { Record } from "@mail/core/common/record";
 
 import { Composer } from "@mail/core/common/composer";
 import { Wysiwyg } from "@html_editor/wysiwyg";
@@ -202,8 +201,12 @@ msgActionsRegistry.add("rt-pin-toggle", {
         try {
             const orm = component.env.services.orm;
             const result = await orm.call("mail.message", "rt_toggle_pinned", [[message.id]]);
-            if (result) {
-                message.pinned_at = result.pinned_at || false;
+            if (result && message.store) {
+                // Use store.insert to ensure Owl reactivity for the new field
+                message.store.insert({
+                    id: message.id,
+                    pinned_at: result.pinned_at || false,
+                });
             }
         } catch (e) {
             console.error("[RTC] pin error:", e);
@@ -213,7 +216,6 @@ msgActionsRegistry.add("rt-pin-toggle", {
 });
 
 patch(MessageModel.prototype, {
-    pinned_at: Record.attr(false),
     async edit(body, attachments = [], args = {}) {
         // args is essentially { mentionedChannels, mentionedPartners, isHtml, ... }
         // We inject isHtml from the Composer patch below
@@ -781,6 +783,12 @@ patch(Composer.prototype, {
 
     onWysiwygLoad(editor) {
         this.wysiwygEditor = editor;
+        
+        // Ensure initial content is loaded correctly (especially for Edit mode)
+        if (this.props.composer.text && this.wysiwygEditor.getContent() === "") {
+            this.wysiwygEditor.setContent(this.props.composer.text);
+        }
+
         if ((this.props.autofocus || this.props.composer.message) && this.wysiwygEditor) {
             // Robust focus strategy: poll slightly until the element is actually in the DOM and visible
             let attempts = 0;
