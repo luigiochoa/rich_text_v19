@@ -93,7 +93,7 @@ if (editAction) {
     editAction.onClick = (component) => {
         const message = toRaw(component?.message);
         if (message && !component.env.inChatWindow) {
-            const text = message.body || "";
+            const text = message.body ? message.body.toString() : "";
             message.composer = {
                 mentionedPartners: message.recipients,
                 text: text,
@@ -127,15 +127,15 @@ msgActionsRegistry.add("quote-reply", {
         const message = component?.message;
         return !!message && !message.is_transient;
     },
-    icon: "fa fa-reply",
-    title: _t("Quote & Reply"),
+    icon: "fa fa-quote-left",
+    title: _t("Quote & Reply").toString(),
     onClick: (component) => {
         const message = toRaw(component?.message);
         const thread = toRaw(component?.props?.thread) || toRaw(message?.thread);
         if (!thread) return;
 
         const authorName = message.author ? message.author.name : _t("Someone");
-        const cleanBody = message.body || "";
+        const cleanBody = message.body ? message.body.toString() : "";
         const quoteHtml = [
             `<div class="rich_text_quote" contenteditable="false" style="border-left:4px solid #00A09D;background:rgba(0,160,157,.05);padding:12px 15px;margin:10px 0;border-radius:0 8px 8px 0;color:#495057">`,
             `<div style="font-size:.9em;margin-bottom:8px;color:#00A09D;font-weight:600"><i class="fa fa-reply me-1"></i> ${authorName} wrote:</div>`,
@@ -178,8 +178,8 @@ msgActionsRegistry.add("rt-pin-toggle", {
         const thread = component?.props?.thread || message?.thread;
         return !!message && !message.is_transient && thread?.model !== "discuss.channel";
     },
-    icon: (component) => component?.message?.pinned_at ? "fa-thumb-tack text-primary" : "fa-thumb-tack",
-    title: (component) => component?.message?.pinned_at ? _t("Unpin Message") : _t("Pin to Top"),
+    icon: (component) => component?.message?.pinned_at ? "fa fa-thumb-tack text-primary" : "fa fa-thumb-tack",
+    title: (component) => component?.message?.pinned_at ? _t("Unpin Message").toString() : _t("Pin to Top").toString(),
     onClick: async (component) => {
         const message = component?.message;
         if (!message) return;
@@ -239,6 +239,24 @@ patch(MessageModel.prototype, {
             return data;
         }
         return super.edit(...arguments);
+    }
+});
+
+patch(Store.prototype, {
+    async getMessagePostParams(params) {
+        const result = await super.getMessagePostParams(params);
+        if (params.postData?.isHtml) {
+            let safeBody = (params.body || "").replace(/<!--[\s\S]*?-->/g, "");
+            safeBody = safeBody.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(match) {
+                const high = match.charCodeAt(0);
+                const low = match.charCodeAt(1);
+                const codePoint = ((high - 0xD800) * 0x400) + (low - 0xDC00) + 0x10000;
+                return `&#${codePoint};`;
+            });
+            const finalBody = `<div class="w-100">${safeBody}</div>`;
+            result.post_data.body = finalBody;
+        }
+        return result;
     }
 });
 
