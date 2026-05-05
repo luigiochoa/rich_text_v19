@@ -1,4 +1,5 @@
 /** @odoo-module */
+import { Record } from "@mail/core/common/record";
 
 import { Composer } from "@mail/core/common/composer";
 import { Wysiwyg } from "@html_editor/wysiwyg";
@@ -97,6 +98,7 @@ if (editAction) {
             message.composer = {
                 mentionedPartners: message.recipients,
                 text: text,
+                message: message,
                 selection: {
                     start: text.length,
                     end: text.length,
@@ -158,11 +160,25 @@ msgActionsRegistry.add("quote-reply", {
         }
 
         const threadId = thread.localId || thread.id;
-        setTimeout(() => {
+        const fireEvent = () => {
             window.dispatchEvent(new CustomEvent("rich_text_insert_quote", {
                 detail: { threadId, quoteHtml }
             }));
-        }, 300);
+        };
+
+        if (thread.composer) {
+            fireEvent();
+        } else {
+            // Wait up to 2 seconds for the composer to appear
+            let attempts = 0;
+            const interval = setInterval(() => {
+                if (thread.composer || attempts > 20) {
+                    clearInterval(interval);
+                    if (thread.composer) fireEvent();
+                }
+                attempts++;
+            }, 100);
+        }
 
         setTimeout(() => {
             const composerEl = document.querySelector('.o-mail-Composer');
@@ -197,6 +213,7 @@ msgActionsRegistry.add("rt-pin-toggle", {
 });
 
 patch(MessageModel.prototype, {
+    pinned_at: Record.attr(false),
     async edit(body, attachments = [], args = {}) {
         // args is essentially { mentionedChannels, mentionedPartners, isHtml, ... }
         // We inject isHtml from the Composer patch below
