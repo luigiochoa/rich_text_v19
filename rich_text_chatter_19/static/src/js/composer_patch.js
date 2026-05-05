@@ -128,7 +128,7 @@ msgActionsRegistry.add("quote-reply", {
         return !!message && !message.is_transient;
     },
     icon: "fa fa-quote-left",
-    title: _t("Quote & Reply").toString(),
+    title: (component) => _t("Quote & Reply").toString(),
     onClick: (component) => {
         const message = toRaw(component?.message);
         const thread = toRaw(component?.props?.thread) || toRaw(message?.thread);
