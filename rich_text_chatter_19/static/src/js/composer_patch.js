@@ -567,6 +567,34 @@ patch(Composer.prototype, {
     },
 
 
+    get postData() {
+        if (!this.wysiwygEditor || this.env.inChatWindow) {
+            // Odoo 19 uses property descriptor patching, but just to be safe, we duplicate native logic instead of super:
+            const composer = toRaw(this.props.composer);
+            return {
+                attachments: composer.attachments || [],
+                emailAddSignature: composer.emailAddSignature,
+                isNote: this.props.type === "note",
+                mentionedChannels: composer.mentionedChannels || [],
+                mentionedPartners: composer.mentionedPartners || [],
+                cannedResponseIds: composer.cannedResponses.map((c) => c.id),
+                parentId: this.props.messageToReplyTo?.message?.id,
+            };
+        }
+        
+        const composer = toRaw(this.props.composer);
+        return {
+            attachments: composer.attachments || [],
+            emailAddSignature: composer.emailAddSignature,
+            isNote: this.props.type === "note",
+            mentionedChannels: composer.mentionedChannels || [],
+            mentionedPartners: composer.mentionedPartners || [],
+            cannedResponseIds: composer.cannedResponses.map((c) => c.id),
+            parentId: this.props.messageToReplyTo?.message?.id,
+            isHtml: true,
+        };
+    },
+
     async editMessage() {
         const isHtml = !!this.wysiwygEditor && !this.env.inChatWindow;
         if (isHtml && !this.askDeleteFromEdit) {
@@ -779,12 +807,7 @@ patch(Composer.prototype, {
                 attachments.some(({ uploading }) => Boolean(uploading))
             );
         }
-        const attachments = this.props.composer.attachments;
-        return (
-            !this.state.active ||
-            (!this.props.composer.text && attachments.length === 0) ||
-            attachments.some(({ uploading }) => Boolean(uploading))
-        );
+        return super.isSendButtonDisabled;
     },
 
     onWysiwygBlur() {
