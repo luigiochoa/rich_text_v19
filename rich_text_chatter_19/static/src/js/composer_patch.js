@@ -18,6 +18,9 @@ import { MentionPlugin } from "@mail/views/web/fields/html_composer_message_fiel
 import { CannedResponsePlugin } from "./canned_response_plugin";
 import { registry } from "@web/core/registry";
 import { _t } from "@web/core/l10n/translation";
+import { FileViewer } from "@web/core/file_viewer/file_viewer";
+import { useFileViewer } from "@web/core/file_viewer/file_viewer_hook";
+
 const msgActionsRegistry = registry.category("mail.message/actions");
 
 // Remove the dangerous Attachment patch that broke image isViewable.
