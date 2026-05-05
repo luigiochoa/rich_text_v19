@@ -16,10 +16,9 @@ import { MAIN_PLUGINS } from "@html_editor/plugin_sets";
 import { Plugin } from "@html_editor/plugin";
 import { MentionPlugin } from "@mail/views/web/fields/html_composer_message_field/mention_plugin";
 import { CannedResponsePlugin } from "./canned_response_plugin";
+import { registry } from "@web/core/registry";
 import { _t } from "@web/core/l10n/translation";
-import { useFileViewer } from "@web/core/file_viewer/file_viewer_hook";
-import { FileViewer } from "@web/core/file_viewer/file_viewer";
-import { loadJS } from "@web/core/assets";
+const msgActionsRegistry = registry.category("mail.message/actions");
 
 // Remove the dangerous Attachment patch that broke image isViewable.
 // We will patch AttachmentCard instead to handle DOCX/XLSX viewability.
@@ -84,17 +83,14 @@ export class ChatterEscapePlugin extends Plugin {
     }
 }
 
-// Patch the "Edit" action from the message dropdown to provide raw HTML 
-// instead of plaintext if we're inside the chatter.
-const editAction = messageActionsRegistry.get("edit");
+// Patch the "Edit" action
+const editAction = msgActionsRegistry.get("edit");
 if (editAction) {
     const originalEditOnClick = editAction.onClick;
     editAction.onClick = (component) => {
-        if (!component.env.inChatWindow) {
-            const message = toRaw(component.message);
-            // In Odoo 19, body is the HTML content.
+        const message = toRaw(component?.message);
+        if (message && !component.env.inChatWindow) {
             const text = message.body || "";
-            // We set the composer Record.
             message.composer = {
                 mentionedPartners: message.recipients,
                 text: text,
@@ -114,15 +110,20 @@ if (editAction) {
     };
 }
 
-// Patch the "Download Files" action to show up even if there is only 1 file
-const downloadAction = messageActionsRegistry.get("download_files");
+// Patch "Download Files"
+const downloadAction = msgActionsRegistry.get("download_files");
 if (downloadAction) {
-    downloadAction.condition = (component) =>
-        component?.message?.attachment_ids?.length > 0 && component?.store?.self?.isInternalUser;
+    downloadAction.condition = (component) => {
+        const message = component?.message;
+        return !!message && message.attachment_ids?.length > 0;
+    };
 }
 
-messageActionsRegistry.add("quote-reply", {
-    condition: () => true,
+msgActionsRegistry.add("quote-reply", {
+    condition: (component) => {
+        const message = component?.message;
+        return !!message && !message.is_transient;
+    },
     icon: "fa fa-reply",
     title: _t("Quote & Reply"),
     onClick: (component) => {
@@ -138,12 +139,10 @@ messageActionsRegistry.add("quote-reply", {
             `<div style="opacity:.9">${cleanBody}</div></div><p><br></p>`,
         ].join("");
 
-        // Find the chatter element to toggle the composer if needed
         const chatterEl = document.querySelector('.o-mail-Chatter');
         if (chatterEl) {
             const composerEl = chatterEl.querySelector('.o-mail-Composer');
             if (!composerEl) {
-                // Try to click "Send Message" or "Log Note" based on the message type
                 const selector = message.is_note ? '.o-mail-Chatter-logNote' : '.o-mail-Chatter-sendMessage';
                 const btn = chatterEl.querySelector(selector) || chatterEl.querySelector('.o-mail-Chatter-command');
                 if (btn) btn.click();
@@ -167,42 +166,10 @@ messageActionsRegistry.add("quote-reply", {
             if (composerEl) composerEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 450);
     },
-    sequence: 10,
+    sequence: 25,
 });
 
-patch(Store.prototype, {
-    async getMessagePostParams(args) {
-        const params = await super.getMessagePostParams(args);
-        if (args.postData && args.postData.isHtml) {
-            let safeBody = (args.body || "").replace(/<!--[\s\S]*?-->/g, "");
-            safeBody = safeBody.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(match) {
-                const high = match.charCodeAt(0);
-                const low = match.charCodeAt(1);
-                const codePoint = ((high - 0xD800) * 0x400) + (low - 0xDC00) + 0x10000;
-                return `&#${codePoint};`;
-            });
-            params.post_data.body = `<div class="w-100">${safeBody}</div>`;
-            
-            const inlineIds = [];
-            const regex = /\/web\/(?:image|content)\/([0-9]+)/g;
-            let match;
-            while ((match = regex.exec(params.post_data.body)) !== null) {
-                inlineIds.push(parseInt(match[1]));
-            }
-            if (inlineIds.length > 0) {
-                params.post_data.attachment_ids = Array.from(new Set([
-                    ...(params.post_data.attachment_ids || []),
-                    ...inlineIds
-                ]));
-            }
-        }
-        return params;
-    }
-});
-
-
-// Robust Pin/Unpin implementation
-messageActionsRegistry.add("rt-pin-toggle", {
+msgActionsRegistry.add("rt-pin-toggle", {
     condition: (component) => {
         const message = component?.message;
         const thread = component?.props?.thread || message?.thread;
@@ -210,15 +177,12 @@ messageActionsRegistry.add("rt-pin-toggle", {
     },
     icon: (component) => component?.message?.pinned_at ? "fa-thumb-tack text-primary" : "fa-thumb-tack",
     title: (component) => component?.message?.pinned_at ? _t("Unpin Message") : _t("Pin to Top"),
-    setup: () => {
-        const component = useComponent();
-        component.rtcOrm = useService("orm");
-    },
     onClick: async (component) => {
         const message = component?.message;
         if (!message) return;
         try {
-            const result = await component.rtcOrm.call("mail.message", "rt_toggle_pinned", [[message.id]]);
+            const orm = component.env.services.orm;
+            const result = await orm.call("mail.message", "rt_toggle_pinned", [[message.id]]);
             if (result) {
                 message.pinned_at = result.pinned_at || false;
             }
@@ -226,7 +190,7 @@ messageActionsRegistry.add("rt-pin-toggle", {
             console.error("[RTC] pin error:", e);
         }
     },
-    sequence: 15,
+    sequence: 35,
 });
 
 patch(MessageModel.prototype, {
@@ -602,11 +566,6 @@ patch(Composer.prototype, {
         };
     },
 
-    get postData() {
-        const res = super.postData;
-        res.isHtml = !!this.wysiwygEditor && !this.env.inChatWindow;
-        return res;
-    },
 
     async editMessage() {
         const isHtml = !!this.wysiwygEditor && !this.env.inChatWindow;
@@ -820,7 +779,12 @@ patch(Composer.prototype, {
                 attachments.some(({ uploading }) => Boolean(uploading))
             );
         }
-        return super.isSendButtonDisabled;
+        const attachments = this.props.composer.attachments;
+        return (
+            !this.state.active ||
+            (!this.props.composer.text && attachments.length === 0) ||
+            attachments.some(({ uploading }) => Boolean(uploading))
+        );
     },
 
     onWysiwygBlur() {
